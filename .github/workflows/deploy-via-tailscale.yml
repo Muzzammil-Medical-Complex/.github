@@ -128,7 +128,9 @@ jobs:
             done <<< "$exclude_raw"
           fi
 
-          rsync -az --delete "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:$remote_path/"
+          # Avoid preserving owner/group/perms; some paths on the server may be root-owned.
+          # Keep symlinks and file mtimes; omit dir mtimes to reduce permission-related failures.
+          rsync -rltz --delete --omit-dir-times "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:$remote_path/"
 
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
