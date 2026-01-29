@@ -49,6 +49,14 @@ jobs:
       TS_OAUTH_SECRET: ${{ secrets.TS_OAUTH_SECRET }}
       ORG_TS_TAGS: ${{ vars.TS_TAGS }}
     steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          # In a reusable workflow, actions/checkout would otherwise check out the workflow repo.
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+
       - name: Validate deploy secrets
         run: |
           set -euo pipefail
@@ -75,18 +83,26 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
 
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'bash -seuo pipefail' <<'EOF'
-          set -euo pipefail
-
-          cd "${{ inputs.remote_repo_path }}"
-          git fetch --prune origin "${{ inputs.remote_branch }}"
-          git checkout "${{ inputs.remote_branch }}"
-          git reset --hard "origin/${{ inputs.remote_branch }}"
-          if [ -n "${{ inputs.git_clean_exclude }}" ]; then
-            git clean -fd -e "${{ inputs.git_clean_exclude }}"
-          else
-            git clean -fd
+          if ! command -v rsync >/dev/null 2>&1; then
+            sudo apt-get update -y
+            sudo apt-get install -y rsync
           fi
 
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'bash -seuo pipefail' <<'EOF'
+          set -euo pipefail
+          mkdir -p "${{ inputs.remote_repo_path }}"
+          EOF
+
+          # Sync repository contents to server (server does not need GitHub deploy keys).
+          excludes=("--exclude=.git/")
+          if [ -n "${{ inputs.git_clean_exclude }}" ]; then
+            excludes+=("--exclude=${{ inputs.git_clean_exclude }}")
+          fi
+
+          rsync -az --delete "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:${{ inputs.remote_repo_path }}/"
+
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
+          set -euo pipefail
+          cd "${{ inputs.remote_repo_path }}"
           ${{ inputs.deploy_cmd }}
           EOF
