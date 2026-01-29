@@ -88,9 +88,17 @@ jobs:
             sudo apt-get install -y rsync
           fi
 
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" 'bash -seuo pipefail' <<'EOF'
+          # Expand ~/... to an absolute path on the server.
+          remote_home=$(ssh "$DEPLOY_USER@$DEPLOY_HOST" 'printf %s "$HOME"')
+          remote_path='${{ inputs.remote_repo_path }}'
+          case "$remote_path" in
+            ~/*) remote_path="$remote_home/${remote_path#~/}" ;;
+            *) : ;;
+          esac
+
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
-          mkdir -p "${{ inputs.remote_repo_path }}"
+          mkdir -p "$REMOTE_PATH"
           EOF
 
           # Sync repository contents to server (server does not need GitHub deploy keys).
@@ -99,10 +107,10 @@ jobs:
             excludes+=("--exclude=${{ inputs.git_clean_exclude }}")
           fi
 
-          rsync -az --delete "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:${{ inputs.remote_repo_path }}/"
+          rsync -az --delete "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:$remote_path/"
 
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
+          ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
-          cd "${{ inputs.remote_repo_path }}"
+          cd "$REMOTE_PATH"
           ${{ inputs.deploy_cmd }}
           EOF
