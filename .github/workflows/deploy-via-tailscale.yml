@@ -91,10 +91,9 @@ jobs:
           # Expand ~/... to an absolute path on the server.
           remote_home=$(ssh "$DEPLOY_USER@$DEPLOY_HOST" 'printf %s "$HOME"')
           remote_path='${{ inputs.remote_repo_path }}'
-          case "$remote_path" in
-            ~/*) remote_path="$remote_home/${remote_path#~/}" ;;
-            *) : ;;
-          esac
+          if [[ "$remote_path" == "~/"* ]]; then
+            remote_path="$remote_home/${remote_path#~/}"
+          fi
 
           ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
