@@ -3,6 +3,11 @@ name: Deploy via Tailscale (reusable)
 'on':
   workflow_call:
     inputs:
+      build_cmd:
+        description: Optional build step executed on the runner before deploy
+        required: false
+        type: string
+        default: ""
       remote_repo_path:
         description: Path to the repo on the server (e.g. ~/mmc-infrastructure)
         required: true
@@ -56,6 +61,12 @@ jobs:
           repository: ${{ github.repository }}
           ref: ${{ github.sha }}
           fetch-depth: 1
+
+      - name: Build
+        if: ${{ inputs.build_cmd != '' }}
+        run: |
+          set -euo pipefail
+          ${{ inputs.build_cmd }}
 
       - name: Validate deploy secrets
         run: |
