@@ -111,6 +111,10 @@ jobs:
           ping: ${{ secrets.DEPLOY_HOST }}
 
       - name: Deploy on server
+        env:
+          INPUT_KNOWN_HOSTS: ${{ inputs.known_hosts }}
+          INPUT_REMOTE_PREFLIGHT_CMD: ${{ inputs.remote_preflight_cmd }}
+          INPUT_DEPLOY_CMD: ${{ inputs.deploy_cmd }}
         run: |
           set -euo pipefail
 
@@ -128,11 +132,9 @@ jobs:
           fi
 
           if [[ '${{ inputs.known_hosts != '' }}' == 'true' ]]; then
-          cat >> ~/.ssh/known_hosts <<'KNOWN_HOSTS'
-          ${{ inputs.known_hosts }}
-          KNOWN_HOSTS
+            printf '%s\n' "$INPUT_KNOWN_HOSTS" >> ~/.ssh/known_hosts
           else
-            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
           fi
 
           ssh_opts=(
@@ -169,19 +171,15 @@ jobs:
           echo "::endgroup::"
 
           echo "::group::Ensure remote dir"
-          "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
-          set -euo pipefail
-          mkdir -p "$REMOTE_PATH"
-          EOF
+          printf 'set -euo pipefail\nmkdir -p "$REMOTE_PATH"\n' | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail"
           echo "::endgroup::"
 
           if [[ '${{ inputs.remote_preflight_cmd != '' }}' == 'true' ]]; then
             echo "::group::Remote preflight"
-            "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
-            set -euo pipefail
-            cd "$REMOTE_PATH"
-            ${{ inputs.remote_preflight_cmd }}
-            EOF
+            {
+              printf 'set -euo pipefail\ncd "$REMOTE_PATH"\n'
+              printf '%s\n' "$INPUT_REMOTE_PREFLIGHT_CMD"
+            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail"
             echo "::endgroup::"
           fi
 
@@ -206,23 +204,21 @@ jobs:
 
           if [[ '${{ inputs.write_deploy_metadata }}' == 'true' ]]; then
             echo "::group::Write deploy metadata"
-            "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' DEPLOY_META_FILE='${{ inputs.deploy_metadata_filename }}' bash -seuo pipefail" <<'EOF'
-            set -euo pipefail
-            cd "$REMOTE_PATH"
-            now="$(date -Is)"
-            meta_path="$REMOTE_PATH/$DEPLOY_META_FILE"
-            tmp="$meta_path.tmp.$$"
-            printf '{"repository":"%s","sha":"%s","deployed_at":"%s"}\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$now" > "$tmp"
-            mv -f "$tmp" "$meta_path"
-            EOF
+            {
+              printf '%s\n' 'set -euo pipefail'
+              printf '%s\n' 'cd "$REMOTE_PATH"'
+              printf '%s\n' 'now="$(date -Is)"'
+              printf '%s\n' 'meta_path="$REMOTE_PATH/$DEPLOY_META_FILE"'
+              printf '%s\n' 'tmp="$meta_path.tmp.$$"'
+              printf '%s\n' 'printf '"'"'{"repository":"%s","sha":"%s","deployed_at":"%s"}\n'"'"' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$now" > "$tmp"'
+              printf '%s\n' 'mv -f "$tmp" "$meta_path"'
+            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' DEPLOY_META_FILE='${{ inputs.deploy_metadata_filename }}' bash -seuo pipefail"
             echo "::endgroup::"
           fi
 
           echo "::group::Remote deploy"
-          "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
-          set -euo pipefail
-          cd "$REMOTE_PATH"
-          echo "[deploy] host=$(hostname) user=$(whoami) path=$PWD repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA"
-          ${{ inputs.deploy_cmd }}
-          EOF
+          {
+            printf 'set -euo pipefail\ncd "$REMOTE_PATH"\necho "[deploy] host=$(hostname) user=$(whoami) path=$PWD repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA"\n'
+            printf '%s\n' "$INPUT_DEPLOY_CMD"
+          } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail"
           echo "::endgroup::"
