@@ -31,6 +31,31 @@ name: Deploy via Tailscale (reusable)
         required: false
         type: string
         default: ""
+      known_hosts:
+        description: Optional known_hosts entries to use instead of ssh-keyscan (more secure, avoids TOFU)
+        required: false
+        type: string
+        default: ""
+      remote_preflight_cmd:
+        description: Optional shell commands executed on the server before rsync/deploy (non-secret)
+        required: false
+        type: string
+        default: ""
+      write_deploy_metadata:
+        description: Write a deploy metadata JSON file into the remote path (repo, sha, timestamp)
+        required: false
+        type: boolean
+        default: false
+      deploy_metadata_filename:
+        description: Filename for deploy metadata (relative to remote path)
+        required: false
+        type: string
+        default: ".deploy-meta.json"
+      debug:
+        description: Enable verbose runner logging (no secret values)
+        required: false
+        type: boolean
+        default: false
     secrets:
       TS_OAUTH_CLIENT_ID:
         required: true
@@ -89,18 +114,48 @@ jobs:
         run: |
           set -euo pipefail
 
+          if [[ '${{ inputs.debug }}' == 'true' ]]; then
+            set -x
+          fi
+
           install -m 700 -d ~/.ssh
+          # Never echo the private key, even in debug mode.
+          set +x
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          if [[ '${{ inputs.debug }}' == 'true' ]]; then
+            set -x
+          fi
+
+          if [[ '${{ inputs.known_hosts != '' }}' == 'true' ]]; then
+            cat >> ~/.ssh/known_hosts <<'KNOWN_HOSTS'
+          ${{ inputs.known_hosts }}
+          KNOWN_HOSTS
+          else
+            ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+          fi
+
+          ssh_opts=(
+            -i ~/.ssh/id_ed25519
+            -o BatchMode=yes
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile=~/.ssh/known_hosts
+            -o ConnectTimeout=15
+          )
+          ssh_cmd=(ssh "${ssh_opts[@]}")
+          rsync_ssh="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o ConnectTimeout=15"
 
           if ! command -v rsync >/dev/null 2>&1; then
             sudo apt-get update -y
             sudo apt-get install -y rsync
           fi
 
+          echo "::notice::Deploying ${{ github.repository }}@${{ github.sha }} to $DEPLOY_HOST"
+
           # Expand ~/... to an absolute path on the server.
-          remote_home=$(ssh "$DEPLOY_USER@$DEPLOY_HOST" 'printf %s "$HOME"')
+          echo "::group::Resolve remote path"
+          remote_home=$("${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" 'printf %s "$HOME"')
           remote_path='${{ inputs.remote_repo_path }}'
           if [[ "$remote_path" == "~/"* ]]; then
             remote_path="$remote_home/${remote_path#~/}"
@@ -109,11 +164,26 @@ jobs:
           else
             remote_path="$remote_home/$remote_path"
           fi
+          echo "remote_home=$remote_home"
+          echo "remote_path=$remote_path"
+          echo "::endgroup::"
 
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
+          echo "::group::Ensure remote dir"
+          "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
           mkdir -p "$REMOTE_PATH"
           EOF
+          echo "::endgroup::"
+
+          if [[ '${{ inputs.remote_preflight_cmd != '' }}' == 'true' ]]; then
+            echo "::group::Remote preflight"
+            "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail" <<'EOF'
+            set -euo pipefail
+            cd "$REMOTE_PATH"
+            ${{ inputs.remote_preflight_cmd }}
+            EOF
+            echo "::endgroup::"
+          fi
 
           # Sync repository contents to server (server does not need GitHub deploy keys).
           excludes=("--exclude=.git/")
@@ -130,10 +200,31 @@ jobs:
 
           # Avoid preserving owner/group/perms; some paths on the server may be root-owned.
           # Keep symlinks and file mtimes; omit dir mtimes to reduce permission-related failures.
-          rsync -rltz --delete --omit-dir-times "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:$remote_path/"
+          echo "::group::rsync"
+          rsync -rltz --delete --omit-dir-times -e "$rsync_ssh" "${excludes[@]}" ./ "$DEPLOY_USER@$DEPLOY_HOST:$remote_path/"
+          echo "::endgroup::"
 
-          ssh "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
+          if [[ '${{ inputs.write_deploy_metadata }}' == 'true' ]]; then
+            echo "::group::Write deploy metadata"
+            "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' DEPLOY_META_FILE='${{ inputs.deploy_metadata_filename }}' bash -seuo pipefail" <<'EOF'
+            set -euo pipefail
+            cd "$REMOTE_PATH"
+            now="$(date -Is)"
+            meta_path="$REMOTE_PATH/$DEPLOY_META_FILE"
+            tmp="$meta_path.tmp.$$"
+            cat > "$tmp" <<META
+          {"repository":"$GITHUB_REPOSITORY","sha":"$GITHUB_SHA","deployed_at":"$now"}
+          META
+            mv -f "$tmp" "$meta_path"
+            EOF
+            echo "::endgroup::"
+          fi
+
+          echo "::group::Remote deploy"
+          "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail" <<'EOF'
           set -euo pipefail
           cd "$REMOTE_PATH"
+          echo "[deploy] host=$(hostname) user=$(whoami) path=$PWD repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA"
           ${{ inputs.deploy_cmd }}
           EOF
+          echo "::endgroup::"
