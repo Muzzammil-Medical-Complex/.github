@@ -170,8 +170,15 @@ jobs:
           echo "remote_path=$remote_path"
           echo "::endgroup::"
 
+          if [[ "$remote_path" =~ [[:space:]] ]]; then
+            echo "::error::remote_repo_path resolved to a path containing whitespace, which is not supported by this workflow: $remote_path"
+            exit 1
+          fi
+
+          remote_path_q="$(printf '%q' "$remote_path")"
+
           echo "::group::Ensure remote dir"
-          printf 'set -euo pipefail\nmkdir -p "$REMOTE_PATH"\n' | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail"
+          printf 'set -euo pipefail\nmkdir -p "$REMOTE_PATH"\n' | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH=$remote_path_q bash -seuo pipefail"
           echo "::endgroup::"
 
           if [[ '${{ inputs.remote_preflight_cmd != '' }}' == 'true' ]]; then
@@ -179,7 +186,7 @@ jobs:
             {
               printf 'set -euo pipefail\ncd "$REMOTE_PATH"\n'
               printf '%s\n' "$INPUT_REMOTE_PREFLIGHT_CMD"
-            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' bash -seuo pipefail"
+            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH=$remote_path_q bash -seuo pipefail"
             echo "::endgroup::"
           fi
 
@@ -210,9 +217,9 @@ jobs:
               printf '%s\n' 'now="$(date -Is)"'
               printf '%s\n' 'meta_path="$REMOTE_PATH/$DEPLOY_META_FILE"'
               printf '%s\n' 'tmp="$meta_path.tmp.$$"'
-              printf '%s\n' 'printf '"'"'{"repository":"%s","sha":"%s","deployed_at":"%s"}\n'"'"' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$now" > "$tmp"'
+              printf '%s\n' "printf '{\\\"repository\\\":\\\"%s\\\",\\\"sha\\\":\\\"%s\\\",\\\"deployed_at\\\":\\\"%s\\\"}\\\\n' \"\\$GITHUB_REPOSITORY\" \"\\$GITHUB_SHA\" \"\\$now\" > \"\\$tmp\""
               printf '%s\n' 'mv -f "$tmp" "$meta_path"'
-            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' DEPLOY_META_FILE='${{ inputs.deploy_metadata_filename }}' bash -seuo pipefail"
+            } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH=$remote_path_q GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' DEPLOY_META_FILE='${{ inputs.deploy_metadata_filename }}' bash -seuo pipefail"
             echo "::endgroup::"
           fi
 
@@ -220,5 +227,5 @@ jobs:
           {
             printf 'set -euo pipefail\ncd "$REMOTE_PATH"\necho "[deploy] host=$(hostname) user=$(whoami) path=$PWD repo=$GITHUB_REPOSITORY sha=$GITHUB_SHA"\n'
             printf '%s\n' "$INPUT_DEPLOY_CMD"
-          } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH='$remote_path' GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail"
+          } | "${ssh_cmd[@]}" "$DEPLOY_USER@$DEPLOY_HOST" "REMOTE_PATH=$remote_path_q GITHUB_SHA='${{ github.sha }}' GITHUB_REPOSITORY='${{ github.repository }}' bash -seuo pipefail"
           echo "::endgroup::"
