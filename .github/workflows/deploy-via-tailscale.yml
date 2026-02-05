@@ -128,7 +128,7 @@ jobs:
           fi
 
           if [[ '${{ inputs.known_hosts != '' }}' == 'true' ]]; then
-            cat >> ~/.ssh/known_hosts <<'KNOWN_HOSTS'
+          cat >> ~/.ssh/known_hosts <<'KNOWN_HOSTS'
           ${{ inputs.known_hosts }}
           KNOWN_HOSTS
           else
@@ -212,9 +212,7 @@ jobs:
             now="$(date -Is)"
             meta_path="$REMOTE_PATH/$DEPLOY_META_FILE"
             tmp="$meta_path.tmp.$$"
-            cat > "$tmp" <<META
-          {"repository":"$GITHUB_REPOSITORY","sha":"$GITHUB_SHA","deployed_at":"$now"}
-          META
+            printf '{"repository":"%s","sha":"%s","deployed_at":"%s"}\n' "$GITHUB_REPOSITORY" "$GITHUB_SHA" "$now" > "$tmp"
             mv -f "$tmp" "$meta_path"
             EOF
             echo "::endgroup::"
